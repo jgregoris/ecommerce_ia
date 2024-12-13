@@ -1,0 +1,30 @@
+# Base de datos
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.23
+
+# Análisis de datos
+pandas==2.1.3
+numpy==1.26.2
+scipy==1.11.4
+
+# Machine Learning
+scikit-learn==1.3.2
+prophet==1.1.4
+xgboost==2.0.2
+optuna==3.4.0
+
+# Deep Learning
+torch==2.1.1
+torchvision==0.16.1
+
+# LLM
+langchain==0.0.340
+chromadb==0.4.18
+
+# Visualización
+streamlit==1.28.2
+plotly==5.18.0
+seaborn==0.13.0
+
+# Procesamiento paralelo
+dask[complete]==2023.11.0
