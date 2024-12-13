@@ -6,6 +6,7 @@ from src.predictor import SalesPredictor
 from datetime import datetime, timedelta
 from io import BytesIO
 
+#prueba
 # Configuración de la página
 st.set_page_config(
     page_title="Amazon Analytics",
