@@ -14,9 +14,9 @@ xgboost==2.0.2
 optuna==3.4.0  # Actualizado a una versión más reciente
 
 # Deep Learning
-torch==2.2.2  # Version compatible con Python 3.10
-torchaudio==2.2.2
-torchvision==0.16.1  # Versión compatible ajustada
+torch==2.1.1
+torchaudio==2.1.1
+torchvision==0.16.1
 
 # LLM
 langchain==0.0.340

@@ -39,7 +39,8 @@ class DatabaseManager:
                 precio_venta = :precio_venta,
                 stock_actual = :stock_actual,
                 stock_minimo = :stock_minimo,
-                categoria = :categoria
+                categoria = :categoria,
+                fecha_actualizacion = CURRENT_TIMESTAMP
             WHERE id = :product_id
         """)
         
@@ -61,14 +62,15 @@ class DatabaseManager:
         with self.engine.connect() as conn:
             # Registrar la venta
             query_venta = text("""
-                INSERT INTO ventas (producto_id, cantidad, precio_venta)
-                VALUES (:producto_id, :cantidad, :precio_venta)
+                INSERT INTO ventas (producto_id, cantidad, precio_venta, fecha_venta)
+                VALUES (:producto_id, :cantidad, :precio_venta, CURRENT_TIMESTAMP)
             """)
             
             # Actualizar stock
             query_stock = text("""
                 UPDATE productos 
-                SET stock_actual = stock_actual - :cantidad
+                SET stock_actual = stock_actual - :cantidad,
+                    fecha_actualizacion = CURRENT_TIMESTAMP
                 WHERE id = :producto_id
             """)
             
@@ -92,38 +94,42 @@ class DatabaseManager:
         query = text("""
             WITH dates AS (
                 SELECT generate_series(
-                    (SELECT MIN(fecha_venta)::date FROM ventas WHERE producto_id = :producto_id),
+                    CURRENT_DATE - INTERVAL '30 days',
                     CURRENT_DATE,
                     '1 day'::interval
-                ) AS fecha
+                ) AS ds
             )
             SELECT 
-                dates.fecha as ds,
+                dates.ds,
                 COALESCE(SUM(v.cantidad), 0) as y
             FROM dates
-            LEFT JOIN ventas v ON dates.fecha::date = v.fecha_venta::date 
+            LEFT JOIN ventas v ON dates.ds::date = v.fecha_venta::date 
                 AND v.producto_id = :producto_id
-            GROUP BY dates.fecha
-            ORDER BY dates.fecha
+            GROUP BY dates.ds
+            ORDER BY dates.ds
         """)
         
-        with self.engine.connect() as conn:
-            df = pd.read_sql(query, conn, params={'producto_id': producto_id})
-            
-            # Asegurar que tenemos al menos 14 días de datos
-            if len(df) < 14:
-                # Generar datos sintéticos si no hay suficientes
-                dates = pd.date_range(
-                    start=datetime.now() - timedelta(days=30),
-                    end=datetime.now(),
-                    freq='D'
-                )
-                df = pd.DataFrame({
-                    'ds': dates,
-                    'y': np.random.normal(10, 2, size=len(dates))  # Datos sintéticos
-                })
-            
-            return df
+        try:
+            with self.engine.connect() as conn:
+                df = pd.read_sql(query, conn, params={'producto_id': producto_id})
+                
+                # Asegurar que tenemos al menos 14 días de datos
+                if len(df) < 14:
+                    # Generar datos sintéticos si no hay suficientes
+                    dates = pd.date_range(
+                        start=datetime.now() - timedelta(days=30),
+                        end=datetime.now(),
+                        freq='D'
+                    )
+                    df = pd.DataFrame({
+                        'ds': dates,
+                        'y': np.random.normal(10, 2, size=len(dates))  # Datos sintéticos
+                    })
+                
+                return df
+        except Exception as e:
+            print(f"Error en get_product_sales: {str(e)}")
+            return None
 
     def get_alerts(self):
         """Obtiene todas las alertas activas"""
@@ -133,67 +139,71 @@ class DatabaseManager:
             'opportunity': []
         }
         
-        # Alertas de stock bajo
-        stock_alerts = pd.read_sql("""
-            SELECT 
-                id,
-                nombre,
-                stock_actual,
-                stock_minimo,
-                categoria,
-                CASE 
-                    WHEN stock_actual = 0 THEN 'critical'
-                    WHEN stock_actual <= stock_minimo THEN 'warning'
-                    WHEN stock_actual <= stock_minimo * 1.2 THEN 'opportunity'
-                END as alert_type
-            FROM productos
-            WHERE stock_actual <= stock_minimo * 1.2
-            ORDER BY 
-                CASE 
-                    WHEN stock_actual = 0 THEN 1
-                    WHEN stock_actual <= stock_minimo THEN 2
-                    ELSE 3
-                END
-        """, self.engine)
-        
-        # Productos sin ventas recientes
-        no_sales_alerts = pd.read_sql("""
-            SELECT 
-                p.id,
-                p.nombre,
-                p.categoria,
-                MAX(v.fecha_venta) as ultima_venta,
-                CURRENT_DATE - MAX(v.fecha_venta) as dias_sin_ventas
-            FROM productos p
-            LEFT JOIN ventas v ON p.id = v.producto_id
-            GROUP BY p.id, p.nombre, p.categoria
-            HAVING MAX(v.fecha_venta) < CURRENT_DATE - INTERVAL '30 days'
-            OR MAX(v.fecha_venta) IS NULL
-        """, self.engine)
-        
-        # Procesar alertas de stock
-        for _, row in stock_alerts.iterrows():
-            alert = {
-                'id': row['id'],
-                'tipo': 'Stock',
-                'producto': row['nombre'],
-                'mensaje': f"Stock actual: {row['stock_actual']} unidades (Mínimo: {row['stock_minimo']})",
-                'categoria': row['categoria']
-            }
-            alerts[row['alert_type']].append(alert)
-        
-        # Procesar alertas de ventas
-        for _, row in no_sales_alerts.iterrows():
-            alert = {
-                'id': row['id'],
-                'tipo': 'Ventas',
-                'producto': row['nombre'],
-                'mensaje': f"Sin ventas durante {row['dias_sin_ventas']} días",
-                'categoria': row['categoria']
-            }
-            alerts['warning'].append(alert)
-        
-        return alerts
+        try:
+            # Alertas de stock bajo
+            stock_alerts = pd.read_sql("""
+                SELECT 
+                    id,
+                    nombre,
+                    stock_actual,
+                    stock_minimo,
+                    categoria,
+                    CASE 
+                        WHEN stock_actual = 0 THEN 'critical'
+                        WHEN stock_actual <= stock_minimo THEN 'warning'
+                        WHEN stock_actual <= stock_minimo * 1.2 THEN 'opportunity'
+                    END as alert_type
+                FROM productos
+                WHERE stock_actual <= stock_minimo * 1.2
+                ORDER BY 
+                    CASE 
+                        WHEN stock_actual = 0 THEN 1
+                        WHEN stock_actual <= stock_minimo THEN 2
+                        ELSE 3
+                    END
+            """, self.engine)
+            
+            # Productos sin ventas recientes
+            no_sales_alerts = pd.read_sql("""
+                SELECT 
+                    p.id,
+                    p.nombre,
+                    p.categoria,
+                    MAX(v.fecha_venta) as ultima_venta,
+                    CURRENT_DATE - MAX(v.fecha_venta) as dias_sin_ventas
+                FROM productos p
+                LEFT JOIN ventas v ON p.id = v.producto_id
+                GROUP BY p.id, p.nombre, p.categoria
+                HAVING MAX(v.fecha_venta) < CURRENT_DATE - INTERVAL '30 days'
+                OR MAX(v.fecha_venta) IS NULL
+            """, self.engine)
+            
+            # Procesar alertas de stock
+            for _, row in stock_alerts.iterrows():
+                alert = {
+                    'id': row['id'],
+                    'tipo': 'Stock',
+                    'producto': row['nombre'],
+                    'mensaje': f"Stock actual: {row['stock_actual']} unidades (Mínimo: {row['stock_minimo']})",
+                    'categoria': row['categoria']
+                }
+                alerts[row['alert_type']].append(alert)
+            
+            # Procesar alertas de ventas
+            for _, row in no_sales_alerts.iterrows():
+                alert = {
+                    'id': row['id'],
+                    'tipo': 'Ventas',
+                    'producto': row['nombre'],
+                    'mensaje': f"Sin ventas durante {row['dias_sin_ventas']} días",
+                    'categoria': row['categoria']
+                }
+                alerts['warning'].append(alert)
+            
+            return alerts
+        except Exception as e:
+            print(f"Error al obtener alertas: {str(e)}")
+            return alerts
 
     def get_sales_report(self, start_date=None, end_date=None):
         """Obtiene reporte detallado de ventas"""
@@ -214,9 +224,13 @@ class DatabaseManager:
             ORDER BY v.fecha_venta DESC
         """)
         
-        with self.engine.connect() as conn:
-            df = pd.read_sql(query, conn, params={'start_date': start_date, 'end_date': end_date})
-            return df
+        try:
+            with self.engine.connect() as conn:
+                df = pd.read_sql(query, conn, params={'start_date': start_date, 'end_date': end_date})
+                return df
+        except Exception as e:
+            print(f"Error en get_sales_report: {str(e)}")
+            return pd.DataFrame()
 
     def get_inventory_report(self):
         """Obtiene reporte de inventario actual"""
@@ -238,9 +252,13 @@ class DatabaseManager:
             ORDER BY p.categoria, p.nombre
         """)
         
-        with self.engine.connect() as conn:
-            df = pd.read_sql(query, conn)
-            return df
+        try:
+            with self.engine.connect() as conn:
+                df = pd.read_sql(query, conn)
+                return df
+        except Exception as e:
+            print(f"Error en get_inventory_report: {str(e)}")
+            return pd.DataFrame()
 
     def get_performance_report(self, periodo='month'):
         """Obtiene reporte de rendimiento por periodo"""
@@ -257,6 +275,66 @@ class DatabaseManager:
             ORDER BY periodo DESC
         """)
         
-        with self.engine.connect() as conn:
-            df = pd.read_sql(query, conn, params={'periodo': periodo})
-            return df
+        try:
+            with self.engine.connect() as conn:
+                df = pd.read_sql(query, conn, params={'periodo': periodo})
+                return df
+        except Exception as e:
+            print(f"Error en get_performance_report: {str(e)}")
+            return pd.DataFrame()
+
+    def get_product_inventory(self, producto_id):
+        """
+        Obtiene el historial de nivel de stock de un producto
+        """
+        try:
+            # Modificamos la consulta para usar las columnas correctas y generar fechas históricas
+            query = text("""
+                WITH RECURSIVE dates AS (
+                    SELECT CURRENT_DATE - INTERVAL '30 days' as fecha
+                    UNION ALL
+                    SELECT fecha + INTERVAL '1 day'
+                    FROM dates
+                    WHERE fecha < CURRENT_DATE
+                ),
+                stock_history AS (
+                    SELECT 
+                        p.id,
+                        p.nombre,
+                        p.stock_actual,
+                        COALESCE(DATE(v.fecha_venta), dates.fecha) as fecha,
+                        COALESCE(SUM(v.cantidad), 0) as ventas_dia
+                    FROM dates
+                    CROSS JOIN productos p
+                    LEFT JOIN ventas v ON DATE(v.fecha_venta) = dates.fecha 
+                        AND v.producto_id = p.id
+                    WHERE p.id = :producto_id
+                    GROUP BY p.id, p.nombre, p.stock_actual, dates.fecha, DATE(v.fecha_venta)
+                )
+                SELECT 
+                    id,
+                    nombre,
+                    fecha as fecha_actualizacion,
+                    stock_actual - SUM(ventas_dia) OVER (ORDER BY fecha) as stock_actual
+                FROM stock_history
+                ORDER BY fecha;
+            """)
+            
+            with self.engine.connect() as conn:
+                df = pd.read_sql(query, conn, params={'producto_id': producto_id})
+                
+                if df.empty:
+                    # Si no hay datos, crear un DataFrame con la estructura correcta
+                    df = pd.DataFrame({
+                        'fecha_actualizacion': pd.date_range(
+                            start=datetime.now() - timedelta(days=30),
+                            end=datetime.now(),
+                            freq='D'
+                        ),
+                        'stock_actual': [0] * 31  # 31 días de datos
+                    })
+                return df
+                
+        except Exception as e:
+            print(f"Error en get_product_inventory: {str(e)}")
+            return None
