@@ -6,104 +6,27 @@ import numpy as np
 class DatabaseManager:
     def __init__(self):
         self.DATABASE_URL = "postgresql://localhost:5432/amazon_analytics"
-        self.engine = create_engine(self.DATABASE_URL)
-
-    def add_product(self, sku, nombre, precio_compra, precio_venta, stock_actual, stock_minimo, categoria):
-        """Añade un nuevo producto a la base de datos"""
-        query = text("""
-            INSERT INTO productos (sku, nombre, precio_compra, precio_venta, stock_actual, stock_minimo, categoria)
-            VALUES (:sku, :nombre, :precio_compra, :precio_venta, :stock_actual, :stock_minimo, :categoria)
-            RETURNING id
-        """)
-        with self.engine.connect() as conn:
-            result = conn.execute(query, {
-                'sku': sku,
-                'nombre': nombre,
-                'precio_compra': precio_compra,
-                'precio_venta': precio_venta,
-                'stock_actual': stock_actual,
-                'stock_minimo': stock_minimo,
-                'categoria': categoria
-            })
-            conn.commit()
-            return result.scalar()
-
-    def update_product(self, product_id, sku, nombre, precio_compra, precio_venta, 
-                      stock_actual, stock_minimo, categoria):
-        """Actualiza un producto existente"""
-        query = text("""
-            UPDATE productos 
-            SET sku = :sku,
-                nombre = :nombre,
-                precio_compra = :precio_compra,
-                precio_venta = :precio_venta,
-                stock_actual = :stock_actual,
-                stock_minimo = :stock_minimo,
-                categoria = :categoria,
-                fecha_actualizacion = CURRENT_TIMESTAMP
-            WHERE id = :product_id
-        """)
-        
-        with self.engine.connect() as conn:
-            conn.execute(query, {
-                'product_id': product_id,
-                'sku': sku,
-                'nombre': nombre,
-                'precio_compra': precio_compra,
-                'precio_venta': precio_venta,
-                'stock_actual': stock_actual,
-                'stock_minimo': stock_minimo,
-                'categoria': categoria
-            })
-            conn.commit()
-
-    def register_sale(self, producto_id, cantidad, precio_venta):
-        """Registra una venta y actualiza el stock"""
-        with self.engine.connect() as conn:
-            # Registrar la venta
-            query_venta = text("""
-                INSERT INTO ventas (producto_id, cantidad, precio_venta, fecha_venta)
-                VALUES (:producto_id, :cantidad, :precio_venta, CURRENT_TIMESTAMP)
-            """)
-            
-            # Actualizar stock
-            query_stock = text("""
-                UPDATE productos 
-                SET stock_actual = stock_actual - :cantidad,
-                    fecha_actualizacion = CURRENT_TIMESTAMP
-                WHERE id = :producto_id
-            """)
-            
-            conn.execute(query_venta, {
-                'producto_id': producto_id,
-                'cantidad': cantidad,
-                'precio_venta': precio_venta
-            })
-            
-            conn.execute(query_stock, {
-                'producto_id': producto_id,
-                'cantidad': cantidad
-            })
-            
-            conn.commit()
+        try:
+            self.engine = create_engine(self.DATABASE_URL)
+        except Exception as e:
+            print(f"Error al conectar con la base de datos: {e}")
+            raise
 
     def get_product_sales(self, producto_id):
-        """
-        Obtiene el historial de ventas de un producto con formato adecuado para Prophet
-        """
+        """Obtiene el historial de ventas de un producto con formato para Prophet"""
         query = text("""
             WITH dates AS (
                 SELECT generate_series(
-                    CURRENT_DATE - INTERVAL '30 days',
+                    CURRENT_DATE - INTERVAL '90 days',
                     CURRENT_DATE,
                     '1 day'::interval
-                ) AS ds
+                )::date AS ds
             )
             SELECT 
                 dates.ds,
                 COALESCE(SUM(v.cantidad), 0) as y
             FROM dates
-            LEFT JOIN ventas v ON dates.ds::date = v.fecha_venta::date 
+            LEFT JOIN ventas v ON dates.ds = v.fecha_venta::date 
                 AND v.producto_id = :producto_id
             GROUP BY dates.ds
             ORDER BY dates.ds
@@ -112,20 +35,18 @@ class DatabaseManager:
         try:
             with self.engine.connect() as conn:
                 df = pd.read_sql(query, conn, params={'producto_id': producto_id})
-                
-                # Asegurar que tenemos al menos 14 días de datos
-                if len(df) < 14:
-                    # Generar datos sintéticos si no hay suficientes
+                if df.empty:
+                    # Crear datos sintéticos si no hay datos reales
                     dates = pd.date_range(
-                        start=datetime.now() - timedelta(days=30),
+                        start=datetime.now() - timedelta(days=90),
                         end=datetime.now(),
                         freq='D'
                     )
                     df = pd.DataFrame({
                         'ds': dates,
-                        'y': np.random.normal(10, 2, size=len(dates))  # Datos sintéticos
+                        'y': np.random.normal(10, 2, size=len(dates))
                     })
-                
+                    df['y'] = df['y'].clip(lower=0)  # Asegurar valores no negativos
                 return df
         except Exception as e:
             print(f"Error en get_product_sales: {str(e)}")
@@ -140,7 +61,6 @@ class DatabaseManager:
         }
         
         try:
-            # Alertas de stock bajo
             stock_alerts = pd.read_sql("""
                 SELECT 
                     id,
@@ -163,22 +83,6 @@ class DatabaseManager:
                     END
             """, self.engine)
             
-            # Productos sin ventas recientes
-            no_sales_alerts = pd.read_sql("""
-                SELECT 
-                    p.id,
-                    p.nombre,
-                    p.categoria,
-                    MAX(v.fecha_venta) as ultima_venta,
-                    CURRENT_DATE - MAX(v.fecha_venta) as dias_sin_ventas
-                FROM productos p
-                LEFT JOIN ventas v ON p.id = v.producto_id
-                GROUP BY p.id, p.nombre, p.categoria
-                HAVING MAX(v.fecha_venta) < CURRENT_DATE - INTERVAL '30 days'
-                OR MAX(v.fecha_venta) IS NULL
-            """, self.engine)
-            
-            # Procesar alertas de stock
             for _, row in stock_alerts.iterrows():
                 alert = {
                     'id': row['id'],
@@ -188,17 +92,6 @@ class DatabaseManager:
                     'categoria': row['categoria']
                 }
                 alerts[row['alert_type']].append(alert)
-            
-            # Procesar alertas de ventas
-            for _, row in no_sales_alerts.iterrows():
-                alert = {
-                    'id': row['id'],
-                    'tipo': 'Ventas',
-                    'producto': row['nombre'],
-                    'mensaje': f"Sin ventas durante {row['dias_sin_ventas']} días",
-                    'categoria': row['categoria']
-                }
-                alerts['warning'].append(alert)
             
             return alerts
         except Exception as e:
@@ -211,12 +104,12 @@ class DatabaseManager:
             SELECT 
                 p.nombre as producto,
                 p.categoria,
-                p.precio_compra,
-                v.precio_venta,
                 v.cantidad,
+                v.precio_venta,
                 v.fecha_venta,
-                (v.precio_venta - p.precio_compra) * v.cantidad as beneficio,
-                ((v.precio_venta - p.precio_compra) / p.precio_compra * 100) as margen_porcentaje
+                CAST((v.precio_venta * v.cantidad) AS DECIMAL(10,2)) as total_venta,
+                CAST((v.precio_venta - p.precio_compra) AS DECIMAL(10,2)) as beneficio,
+                CAST(((v.precio_venta - p.precio_compra) / NULLIF(v.precio_venta, 0) * 100) AS DECIMAL(10,2)) as margen_porcentaje
             FROM ventas v
             JOIN productos p ON v.producto_id = p.id
             WHERE (:start_date IS NULL OR v.fecha_venta >= :start_date)
@@ -226,8 +119,7 @@ class DatabaseManager:
         
         try:
             with self.engine.connect() as conn:
-                df = pd.read_sql(query, conn, params={'start_date': start_date, 'end_date': end_date})
-                return df
+                return pd.read_sql(query, conn, params={'start_date': start_date, 'end_date': end_date})
         except Exception as e:
             print(f"Error en get_sales_report: {str(e)}")
             return pd.DataFrame()
@@ -236,105 +128,89 @@ class DatabaseManager:
         """Obtiene reporte de inventario actual"""
         query = text("""
             SELECT 
-                p.sku,
                 p.nombre,
                 p.categoria,
                 p.stock_actual,
-                p.stock_minimo,
-                p.precio_compra,
-                p.precio_venta,
-                p.stock_actual * p.precio_compra as valor_inventario,
                 COALESCE(SUM(v.cantidad), 0) as ventas_totales,
-                COALESCE(AVG(v.precio_venta), 0) as precio_promedio_venta
+                CAST(p.stock_actual * p.precio_compra AS DECIMAL(10,2)) as valor_inventario
             FROM productos p
             LEFT JOIN ventas v ON p.id = v.producto_id
-            GROUP BY p.id
+            GROUP BY p.id, p.nombre, p.categoria, p.stock_actual, p.precio_compra
             ORDER BY p.categoria, p.nombre
         """)
         
         try:
             with self.engine.connect() as conn:
-                df = pd.read_sql(query, conn)
-                return df
+                return pd.read_sql(query, conn)
         except Exception as e:
             print(f"Error en get_inventory_report: {str(e)}")
             return pd.DataFrame()
 
-    def get_performance_report(self, periodo='month'):
-        """Obtiene reporte de rendimiento por periodo"""
-        query = text("""
-            SELECT 
-                DATE_TRUNC(:periodo, v.fecha_venta) as periodo,
-                COUNT(DISTINCT v.producto_id) as productos_vendidos,
-                SUM(v.cantidad) as unidades_vendidas,
-                SUM(v.precio_venta * v.cantidad) as ingresos_totales,
-                SUM((v.precio_venta - p.precio_compra) * v.cantidad) as beneficio_total
-            FROM ventas v
-            JOIN productos p ON v.producto_id = p.id
-            GROUP BY DATE_TRUNC(:periodo, v.fecha_venta)
-            ORDER BY periodo DESC
-        """)
-        
+    def load_dashboard_data(self):
+        """Carga los datos para el dashboard principal"""
         try:
-            with self.engine.connect() as conn:
-                df = pd.read_sql(query, conn, params={'periodo': periodo})
-                return df
-        except Exception as e:
-            print(f"Error en get_performance_report: {str(e)}")
-            return pd.DataFrame()
-
-    def get_product_inventory(self, producto_id):
-        """
-        Obtiene el historial de nivel de stock de un producto
-        """
-        try:
-            # Modificamos la consulta para usar las columnas correctas y generar fechas históricas
-            query = text("""
-                WITH RECURSIVE dates AS (
-                    SELECT CURRENT_DATE - INTERVAL '30 days' as fecha
-                    UNION ALL
-                    SELECT fecha + INTERVAL '1 day'
-                    FROM dates
-                    WHERE fecha < CURRENT_DATE
-                ),
-                stock_history AS (
+            low_stock = pd.read_sql("""
+                WITH stock_calc AS (
                     SELECT 
-                        p.id,
-                        p.nombre,
-                        p.stock_actual,
-                        COALESCE(DATE(v.fecha_venta), dates.fecha) as fecha,
-                        COALESCE(SUM(v.cantidad), 0) as ventas_dia
-                    FROM dates
-                    CROSS JOIN productos p
-                    LEFT JOIN ventas v ON DATE(v.fecha_venta) = dates.fecha 
-                        AND v.producto_id = p.id
-                    WHERE p.id = :producto_id
-                    GROUP BY p.id, p.nombre, p.stock_actual, dates.fecha, DATE(v.fecha_venta)
+                        id, 
+                        sku, 
+                        nombre, 
+                        stock_actual, 
+                        stock_minimo,
+                        CASE 
+                            WHEN stock_minimo = 0 THEN 100.0
+                            ELSE (stock_actual::decimal * 100.0 / NULLIF(stock_minimo, 0))
+                        END as stock_calc
+                    FROM productos
+                    WHERE stock_actual <= stock_minimo * 1.2
                 )
                 SELECT 
                     id,
+                    sku,
                     nombre,
-                    fecha as fecha_actualizacion,
-                    stock_actual - SUM(ventas_dia) OVER (ORDER BY fecha) as stock_actual
-                FROM stock_history
-                ORDER BY fecha;
-            """)
+                    stock_actual,
+                    stock_minimo,
+                    CAST(stock_calc AS DECIMAL(10,2)) as stock_percentage
+                FROM stock_calc
+                ORDER BY stock_calc ASC
+            """, self.engine)
             
-            with self.engine.connect() as conn:
-                df = pd.read_sql(query, conn, params={'producto_id': producto_id})
-                
-                if df.empty:
-                    # Si no hay datos, crear un DataFrame con la estructura correcta
-                    df = pd.DataFrame({
-                        'fecha_actualizacion': pd.date_range(
-                            start=datetime.now() - timedelta(days=30),
-                            end=datetime.now(),
-                            freq='D'
-                        ),
-                        'stock_actual': [0] * 31  # 31 días de datos
-                    })
-                return df
-                
+            recent_sales = pd.read_sql("""
+                SELECT 
+                    p.nombre, 
+                    v.cantidad, 
+                    v.precio_venta,
+                    CAST(v.precio_venta * v.cantidad AS DECIMAL(10,2)) as total_venta,
+                    v.fecha_venta,
+                    p.categoria
+                FROM ventas v
+                JOIN productos p ON v.producto_id = p.id
+                ORDER BY v.fecha_venta DESC
+                LIMIT 10
+            """, self.engine)
+            
+            metrics = pd.read_sql("""
+                WITH ventas_totales AS (
+                    SELECT 
+                        CAST(SUM(v.cantidad * v.precio_venta) AS DECIMAL(10,2)) as total_ventas,
+                        COUNT(DISTINCT v.producto_id) as productos_vendidos,
+                        SUM(v.cantidad) as unidades_vendidas
+                    FROM ventas v
+                    WHERE v.fecha_venta >= CURRENT_DATE - INTERVAL '30 days'
+                )
+                SELECT 
+                    COUNT(DISTINCT p.id) as total_productos,
+                    SUM(p.stock_actual) as stock_total,
+                    CAST(SUM(p.stock_actual * p.precio_compra) AS DECIMAL(10,2)) as valor_inventario,
+                    COALESCE(vt.total_ventas, 0) as total_ventas,
+                    COALESCE(vt.productos_vendidos, 0) as productos_vendidos,
+                    COALESCE(vt.unidades_vendidas, 0) as unidades_vendidas
+                FROM productos p
+                LEFT JOIN ventas_totales vt ON true
+                GROUP BY vt.total_ventas, vt.productos_vendidos, vt.unidades_vendidas
+            """, self.engine)
+            
+            return low_stock, recent_sales, metrics
         except Exception as e:
-            print(f"Error en get_product_inventory: {str(e)}")
-            return None
+            print(f"Error al cargar datos del dashboard: {str(e)}")
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
