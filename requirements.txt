@@ -11,10 +11,11 @@ scipy==1.11.4
 scikit-learn==1.3.2
 prophet==1.1.4
 xgboost==2.0.2
-optuna==3.4.0
+optuna==3.4.0  # Actualizado a una versión más reciente
 
 # Deep Learning
 torch==2.1.1
+torchaudio==2.1.1
 torchvision==0.16.1
 
 # LLM
@@ -22,9 +23,12 @@ langchain==0.0.340
 chromadb==0.4.18
 
 # Visualización
-streamlit==1.28.2
 plotly==5.18.0
 seaborn==0.13.0
 
 # Procesamiento paralelo
 dask[complete]==2023.11.0
+
+prophet==1.1.4
+statsmodels==0.14.0
+xlsxwriter==3.1.2
