@@ -256,169 +256,184 @@ elif page == "Productos":
                 ["Todos", "Stock Bajo", "Sin Stock", "Stock Normal"]
             )
         
-        # Construir query
-        query = """
-            SELECT 
-                p.*,
-                COALESCE(v.total_ventas, 0) as ventas_totales,
-                COALESCE(v.ultimo_mes, 0) as ventas_ultimo_mes
-            FROM productos p
-            LEFT JOIN (
+        # Construir consulta
+        try:
+            # Construir la consulta base sin concatenación
+            conditions = []
+            query_text = """
                 SELECT 
-                    producto_id,
-                    COUNT(*) as total_ventas,
-                    SUM(CASE WHEN fecha_venta >= CURRENT_DATE - INTERVAL '30 days'
-                        THEN 1 ELSE 0 END) as ultimo_mes
-                FROM ventas
-                GROUP BY producto_id
-            ) v ON p.id = v.producto_id
-            WHERE 1=1
-        """
-        params = {}
-        
-        if search_term:
-            query += " AND (LOWER(p.nombre) LIKE LOWER(:search) OR LOWER(p.sku) LIKE LOWER(:search))"
-            params['search'] = f"%{search_term}%"
-        
-        if categoria_filter != "Todas":
-            query += " AND p.categoria = :categoria"
-            params['categoria'] = categoria_filter
-        
-        if stock_filter == "Stock Bajo":
-            query += " AND p.stock_actual <= p.stock_minimo"
-        elif stock_filter == "Sin Stock":
-            query += " AND p.stock_actual = 0"
-        elif stock_filter == "Stock Normal":
-            query += " AND p.stock_actual > p.stock_minimo"
-        
-        # Ejecutar query
-        productos = pd.read_sql(query, db.engine, params=params)
-        
-        if not productos.empty:
-            st.dataframe(
-                productos.style.apply(lambda x: [
-                    'background-color: #ffcccc' if x['stock_actual'] <= x['stock_minimo']
-                    else 'background-color: #ccffcc' if x['stock_actual'] > x['stock_minimo'] * 2
-                    else '' for i in x
-                ], axis=1),
-                hide_index=True
-            )
+                    p.*,
+                    COALESCE(v.total_ventas, 0) as ventas_totales,
+                    COALESCE(v.ultimo_mes, 0) as ventas_ultimo_mes
+                FROM productos p
+                LEFT JOIN (
+                    SELECT 
+                        producto_id,
+                        COUNT(*) as total_ventas,
+                        SUM(CASE WHEN fecha_venta >= CURRENT_DATE - INTERVAL '30 days'
+                            THEN 1 ELSE 0 END) as ultimo_mes
+                    FROM ventas
+                    GROUP BY producto_id
+                ) v ON p.id = v.producto_id
+                WHERE 1=1
+            """
             
-            # Edición de productos
-            st.subheader("Editar Producto")
-            producto_id = st.selectbox(
-                "Selecciona un producto para editar",
-                options=productos['id'].tolist(),
-                format_func=lambda x: f"{productos[productos['id']==x]['nombre'].iloc[0]} (SKU: {productos[productos['id']==x]['sku'].iloc[0]})"
-            )
+            # Construir las condiciones y parámetros
+            params = {}
             
-            if producto_id:
-                producto_actual = productos[productos['id'] == producto_id].iloc[0]
+            if search_term:
+                conditions.append("(LOWER(p.nombre) LIKE LOWER(:search) OR LOWER(p.sku) LIKE LOWER(:search))")
+                params['search'] = f"%{search_term}%"
+            
+            if categoria_filter != "Todas":
+                conditions.append("p.categoria = :categoria")
+                params['categoria'] = categoria_filter
+            
+            if stock_filter == "Stock Bajo":
+                conditions.append("p.stock_actual <= p.stock_minimo")
+            elif stock_filter == "Sin Stock":
+                conditions.append("p.stock_actual = 0")
+            elif stock_filter == "Stock Normal":
+                conditions.append("p.stock_actual > p.stock_minimo")
+            
+            # Añadir condiciones a la consulta
+            if conditions:
+                query_text += " AND " + " AND ".join(conditions)
+            
+            # Crear objeto text() con la consulta completa y ejecutar
+            query = text(query_text)
+            productos = pd.read_sql(query, db.engine, params=params)
+            
+            if not productos.empty:
+                st.dataframe(
+                    productos.style.apply(lambda x: [
+                        'background-color: #ffcccc' if x['stock_actual'] <= x['stock_minimo']
+                        else 'background-color: #ccffcc' if x['stock_actual'] > x['stock_minimo'] * 2
+                        else '' for i in x
+                    ], axis=1),
+                    hide_index=True
+                )
                 
-                with st.form(key="form_editar_producto"):
-                    col1, col2 = st.columns(2)
+                # Edición de productos
+                st.subheader("Editar Producto")
+                producto_id = st.selectbox(
+                    "Selecciona un producto para editar",
+                    options=productos['id'].tolist(),
+                    format_func=lambda x: f"{productos[productos['id']==x]['nombre'].iloc[0]} (SKU: {productos[productos['id']==x]['sku'].iloc[0]})"
+                )
+                
+                if producto_id:
+                    producto_actual = productos[productos['id'] == producto_id].iloc[0]
                     
-                    with col1:
-                        nuevo_sku = st.text_input("SKU", value=producto_actual['sku'])
-                        nuevo_nombre = st.text_input("Nombre", value=producto_actual['nombre'])
-                        nueva_categoria = st.text_input("Categoría", value=producto_actual['categoria'])
+                    with st.form(key="form_editar_producto"):
+                        col1, col2 = st.columns(2)
                         
-                    with col2:
-                        nuevo_precio_compra = st.number_input(
-                            "Precio de Compra", 
-                            value=float(producto_actual['precio_compra']),
-                            min_value=0.0,
-                            format="%.2f"
-                        )
-                        nuevo_precio_venta = st.number_input(
-                            "Precio de Venta",
-                            value=float(producto_actual['precio_venta']),
-                            min_value=0.0,
-                            format="%.2f"
-                        )
-                        nuevo_stock_actual = st.number_input(
-                            "Stock Actual",
-                            value=int(producto_actual['stock_actual']),
-                            min_value=0
-                        )
-                        nuevo_stock_minimo = st.number_input(
-                            "Stock Mínimo",
-                            value=int(producto_actual['stock_minimo']),
-                            min_value=0
-                        )
-                    
-                    if st.form_submit_button("Actualizar Producto"):
-                        try:
-                            db.update_product(
-                                producto_id,
-                                nuevo_sku,
-                                nuevo_nombre,
-                                nuevo_precio_compra,
-                                nuevo_precio_venta,
-                                nuevo_stock_actual,
-                                nuevo_stock_minimo,
-                                nueva_categoria
+                        with col1:
+                            nuevo_sku = st.text_input("SKU", value=producto_actual['sku'])
+                            nuevo_nombre = st.text_input("Nombre", value=producto_actual['nombre'])
+                            nueva_categoria = st.text_input("Categoría", value=producto_actual['categoria'])
+                            
+                        with col2:
+                            nuevo_precio_compra = st.number_input(
+                                "Precio de Compra", 
+                                value=float(producto_actual['precio_compra']),
+                                min_value=0.0,
+                                format="%.2f"
                             )
-                            st.success("✅ Producto actualizado correctamente")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error al actualizar producto: {str(e)}")
-        else:
-            st.info("No se encontraron productos con los filtros seleccionados")
-        
-        # Formulario para añadir nuevo producto
-        st.subheader("Añadir Nuevo Producto")
-        with st.form(key="form_nuevo_producto"):
-            col1, col2 = st.columns(2)
+                            nuevo_precio_venta = st.number_input(
+                                "Precio de Venta",
+                                value=float(producto_actual['precio_venta']),
+                                min_value=0.0,
+                                format="%.2f"
+                            )
+                            nuevo_stock_actual = st.number_input(
+                                "Stock Actual",
+                                value=int(producto_actual['stock_actual']),
+                                min_value=0
+                            )
+                            nuevo_stock_minimo = st.number_input(
+                                "Stock Mínimo",
+                                value=int(producto_actual['stock_minimo']),
+                                min_value=0
+                            )
+                        
+                        if st.form_submit_button("Actualizar Producto"):
+                            try:
+                                db.update_product(
+                                    producto_id,
+                                    nuevo_sku,
+                                    nuevo_nombre,
+                                    nuevo_precio_compra,
+                                    nuevo_precio_venta,
+                                    nuevo_stock_actual,
+                                    nuevo_stock_minimo,
+                                    nueva_categoria
+                                )
+                                st.success("✅ Producto actualizado correctamente")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error al actualizar producto: {str(e)}")
+            else:
+                st.info("No se encontraron productos con los filtros seleccionados")
             
-            with col1:
-                sku = st.text_input("SKU", key="nuevo_sku")
-                nombre = st.text_input("Nombre", key="nuevo_nombre")
-                categoria = st.text_input("Categoría", key="nueva_categoria")
-            
-            with col2:
-                precio_compra = st.number_input(
-                    "Precio de Compra",
-                    min_value=0.0,
-                    format="%.2f",
-                    key="nuevo_precio_compra"
-                )
-                precio_venta = st.number_input(
-                    "Precio de Venta",
-                    min_value=0.0,
-                    format="%.2f",
-                    key="nuevo_precio_venta"
-                )
-                stock_actual = st.number_input(
-                    "Stock Actual",
-                    min_value=0,
-                    key="nuevo_stock_actual"
-                )
-                stock_minimo = st.number_input(
-                    "Stock Mínimo",
-                    min_value=0,
-                    key="nuevo_stock_minimo"
-                )
-            
-            if st.form_submit_button("Añadir Producto"):
-                try:
-                    db.add_product(
-                        sku,
-                        nombre,
-                        precio_compra,
-                        precio_venta,
-                        stock_actual,
-                        stock_minimo,
-                        categoria
+            # Formulario para añadir nuevo producto
+            st.subheader("Añadir Nuevo Producto")
+            with st.form(key="form_nuevo_producto"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    sku = st.text_input("SKU", key="nuevo_sku")
+                    nombre = st.text_input("Nombre", key="nuevo_nombre")
+                    categoria = st.text_input("Categoría", key="nueva_categoria")
+                
+                with col2:
+                    precio_compra = st.number_input(
+                        "Precio de Compra",
+                        min_value=0.0,
+                        format="%.2f",
+                        key="nuevo_precio_compra"
                     )
-                    st.success("✅ Producto añadido correctamente")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error al añadir producto: {str(e)}")
+                    precio_venta = st.number_input(
+                        "Precio de Venta",
+                        min_value=0.0,
+                        format="%.2f",
+                        key="nuevo_precio_venta"
+                    )
+                    stock_actual = st.number_input(
+                        "Stock Actual",
+                        min_value=0,
+                        key="nuevo_stock_actual"
+                    )
+                    stock_minimo = st.number_input(
+                        "Stock Mínimo",
+                        min_value=0,
+                        key="nuevo_stock_minimo"
+                    )
+                
+                if st.form_submit_button("Añadir Producto"):
+                    try:
+                        db.add_product(
+                            sku,
+                            nombre,
+                            precio_compra,
+                            precio_venta,
+                            stock_actual,
+                            stock_minimo,
+                            categoria
+                        )
+                        st.success("✅ Producto añadido correctamente")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al añadir producto: {str(e)}")
+                        
+        except Exception as e:
+            logger.error(f"Error en consulta de productos: {e}")
+            st.error(f"Error al cargar los productos: {str(e)}")
 
     except Exception as e:
+        logger.error(f"Error en la página de productos: {e}")
         st.error(f"Error en la página de productos: {str(e)}")
-
+        
 elif page == "Ventas":
     st.title("Registro y Análisis de Ventas")
     
