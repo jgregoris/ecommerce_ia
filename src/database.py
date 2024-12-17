@@ -477,8 +477,6 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error en get_sales_report: {e}")
             return pd.DataFrame()
-
-    def get_performance_report(self, periodo='month'):
         """Obtiene reporte de rendimiento por periodo"""
         try:
             # Adaptamos el intervalo según el período seleccionado
@@ -529,7 +527,43 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error en get_performance_report: {e}")
             return pd.DataFrame()
-        
+
+    def get_performance_report(self, periodo='month'):
+        """Obtiene reporte de rendimiento por periodo"""
+        try:
+            query = text("""
+                WITH ventas_periodo AS (
+                    SELECT 
+                        DATE_TRUNC(:periodo, v.fecha_venta) as periodo,
+                        CAST(SUM(v.cantidad * v.precio_venta) AS DECIMAL(10,2)) as ingresos_totales,
+                        CAST(SUM(v.cantidad * (v.precio_venta - p.precio_compra)) AS DECIMAL(10,2)) as beneficio_total,
+                        COUNT(DISTINCT v.producto_id) as productos_vendidos,
+                        CAST(
+                            CASE 
+                                WHEN SUM(v.cantidad * v.precio_venta) > 0 
+                                THEN (SUM(v.cantidad * (v.precio_venta - p.precio_compra)) / 
+                                    SUM(v.cantidad * v.precio_venta) * 100)
+                                ELSE 0 
+                            END AS DECIMAL(10,2)
+                        ) as margen_porcentaje
+                    FROM ventas v
+                    JOIN productos p ON v.producto_id = p.id
+                    WHERE v.fecha_venta >= CURRENT_DATE - INTERVAL '12 months'
+                    GROUP BY DATE_TRUNC(:periodo, v.fecha_venta)
+                )
+                SELECT *
+                FROM ventas_periodo
+                ORDER BY periodo DESC
+            """)
+            
+            with self.engine.connect() as conn:
+                df = pd.read_sql(query, conn, params={'periodo': periodo})
+                return df
+                
+        except Exception as e:
+            logger.error(f"Error en get_performance_report: {e}")
+            return pd.DataFrame()
+            
     def save_prediction(self, producto_id, prediccion):
         """Guarda una predicción en la base de datos"""
         try:

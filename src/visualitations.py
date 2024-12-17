@@ -454,3 +454,70 @@ class DashboardVisualizer:
         except Exception as e:
             logger.error(f"Error al crear dashboard de rendimiento: {str(e)}")
             return go.Figure()
+    
+    # Añadir este método a la clase DashboardVisualizer en visualitations.py
+
+    def create_forecast_visualization(self, historical_data: pd.DataFrame, forecast_data: pd.DataFrame) -> go.Figure:
+        """
+        Crea una visualización de las predicciones junto con los datos históricos.
+        
+        Args:
+            historical_data (pd.DataFrame): DataFrame con los datos históricos
+            forecast_data (pd.DataFrame): DataFrame con las predicciones
+        
+        Returns:
+            go.Figure: Figura de Plotly con la visualización
+        """
+        try:
+            fig = go.Figure()
+
+            # Datos históricos
+            fig.add_trace(
+                go.Scatter(
+                    x=historical_data['ds'],
+                    y=historical_data['y'],
+                    name="Ventas Históricas",
+                    mode='lines+markers',
+                    line=dict(color='#1f77b4', width=1),
+                    marker=dict(size=4)
+                )
+            )
+
+            # Predicción
+            fig.add_trace(
+                go.Scatter(
+                    x=forecast_data['ds'],
+                    y=forecast_data['yhat'],
+                    name="Predicción",
+                    mode='lines',
+                    line=dict(color='#2ca02c', width=2, dash='dash')
+                )
+            )
+
+            # Intervalo de confianza
+            fig.add_trace(
+                go.Scatter(
+                    x=forecast_data['ds'].tolist() + forecast_data['ds'].tolist()[::-1],
+                    y=forecast_data['yhat_upper'].tolist() + forecast_data['yhat_lower'].tolist()[::-1],
+                    fill='toself',
+                    fillcolor='rgba(0,176,246,0.2)',
+                    line=dict(color='rgba(255,255,255,0)'),
+                    name='Intervalo de Confianza',
+                    showlegend=True
+                )
+            )
+
+            fig.update_layout(
+                title="Predicción de Ventas",
+                xaxis_title="Fecha",
+                yaxis_title="Unidades Vendidas",
+                hovermode='x unified',
+                showlegend=True,
+                template=self.theme
+            )
+
+            return fig
+
+        except Exception as e:
+            logger.error(f"Error al crear visualización de predicción: {e}")
+            return go.Figure()  # Retorna una figura vacía en caso de error
