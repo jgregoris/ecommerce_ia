@@ -30,31 +30,48 @@ st.set_page_config(
 )
 
 # Inicialización con manejo de errores
+# En app.py, modifica la función init_components:
 @st.cache_resource
 def init_components():
     max_retries = 3
     retry_delay = 2
     
+    # Determinar el entorno
+    is_local = os.getenv('STREAMLIT_ENV', 'local') == 'local'
+    
     for attempt in range(max_retries):
         try:
-            # Usar solo variables de entorno
-            load_dotenv()  # Asegurarse de cargar las variables de entorno
-            
-            db_config = {
-                'user': os.getenv('DB_USER'),
-                'password': os.getenv('DB_PASSWORD'),
-                'host': os.getenv('DB_HOST'),
-                'port': os.getenv('DB_PORT'),
-                'database': os.getenv('DB_NAME'),
-                
-            }
+            if is_local:
+                # Cargar configuración local
+                config_path = os.path.join(os.path.dirname(__file__), 'config_local.toml')
+                if os.path.exists(config_path):
+                    with open(config_path, 'r') as f:
+                        config = toml.load(f)
+                        db_config = config
+                else:
+                    # Fallback a variables de entorno locales
+                    load_dotenv()
+                    db_config = {
+                        'DB_USER': 'sunbay85',
+                        'DB_PASSWORD': 'Kiro2014',
+                        'DB_HOST': 'localhost',
+                        'DB_PORT': '5432',
+                        'DB_NAME': 'amazon_analytics',
+                    }
+            else:
+                # Usar configuración de Streamlit Secrets (Supabase)
+                db_config = st.secrets
 
-            # Agregar logging para depuración
-            logger.info("Attempting database connection with config:", db_config)
+            # En app.py, modifica la creación de database_url
 
-            # Crear la URL de conexión
-            # En la función init_components()
-            database_url = f"postgresql://{db_config['user']}:{db_config['password']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
+            # En app.py, modifica la creación de database_url
+            if not is_local:
+                # Para producción (Supabase)
+                database_url = f"postgresql://{db_config['DB_USER']}:{db_config['DB_PASSWORD']}@{db_config['DB_HOST']}:{db_config['DB_PORT']}/{db_config['DB_NAME']}?sslmode=require"
+            else:
+                # Para local
+                database_url = f"postgresql://{db_config['DB_USER']}:{db_config['DB_PASSWORD']}@{db_config['DB_HOST']}:{db_config['DB_PORT']}/{db_config['DB_NAME']}"
+            logger.info(f"Connecting to database in {db_config['DB_HOST']} environment")
             
             db = DatabaseManager(database_url)
             if not db.test_connection():
@@ -64,6 +81,7 @@ def init_components():
             visualizer = DashboardVisualizer()
             assistant = InventoryAssistant(db)
             return db, predictor, visualizer, assistant
+            
         except Exception as e:
             if attempt < max_retries - 1:
                 logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying in {retry_delay} seconds...")
