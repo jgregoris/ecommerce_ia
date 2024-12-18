@@ -7,3 +7,4 @@ scikit_learn==1.6.0
 SQLAlchemy==2.0.36
 statsmodels==0.14.4
 streamlit==1.40.1
+psycopg2-binary==2.9.10
