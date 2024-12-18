@@ -4,19 +4,17 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta
 import numpy as np
 import logging
+from config import DATABASE_URL
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class DatabaseManager:
-    def __init__(self, database_url):
+    def __init__(self):
         """Inicializa la conexión a la base de datos"""
         try:
-            if not self.validate_database_url(database_url):
-                raise ValueError("URL de base de datos inválida")
-                
-            self.engine = create_engine(database_url)
+            self.engine = create_engine(DATABASE_URL)
             self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
             logger.info("Conexión a base de datos establecida")
         except Exception as e:
@@ -32,11 +30,9 @@ class DatabaseManager:
         try:
             with self.engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
-            logger.info("Test de conexión exitoso")
             return True
         except Exception as e:
-            logger.error(f"Error en test_connection: {str(e)}")
-            logger.error(f"Detalles de conexión: {self.engine.url}")
+            logger.error(f"Error en test_connection: {e}")
             return False
 
     def add_product(self, sku, nombre, precio_compra, precio_venta, stock_actual, stock_minimo, categoria):
