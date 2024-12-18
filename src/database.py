@@ -326,60 +326,56 @@ class DatabaseManager:
         try:
             logger.info(f"Cargando datos del dashboard para el período: {fecha_inicio} - {fecha_fin}")
             
-            # Si no se especifican fechas, usar últimos 30 días
             if fecha_inicio is None:
                 fecha_inicio = datetime.now().date() - timedelta(days=30)
             if fecha_fin is None:
                 fecha_fin = datetime.now().date()
             
-            # Calcular días del periodo
             dias_periodo = (fecha_fin - fecha_inicio).days
 
-            # Query para métricas principales con valores por defecto cuando no hay ventas
+            # Query para métricas principales corregida
             metrics = pd.read_sql(text("""
-            WITH base_metrics AS (
+                WITH base_metrics AS (
+                    SELECT 
+                        COALESCE(SUM(v.cantidad * v.precio_venta), 0) as total_ventas,
+                        COALESCE(COUNT(DISTINCT v.producto_id), 0) as productos_vendidos,
+                        COALESCE(SUM(v.cantidad), 0) as unidades_vendidas,
+                        COALESCE(AVG(v.precio_venta), 0) as ticket_promedio,
+                        COALESCE(AVG((v.precio_venta - p.precio_compra) / NULLIF(v.precio_venta, 0) * 100), 0) as margen_promedio,
+                        COALESCE(SUM(v.cantidad * (v.precio_venta - p.precio_compra)), 0) as beneficio_total
+                    FROM productos p
+                    LEFT JOIN ventas v ON v.producto_id = p.id 
+                        AND v.fecha_venta BETWEEN :fecha_inicio AND :fecha_fin
+                ),
+                productos_metrics AS (
+                    SELECT 
+                        COUNT(id) as total_productos,  -- Cambiado de productos_total a total_productos
+                        SUM(stock_actual) as stock_total,
+                        SUM(stock_actual * precio_compra) as valor_inventario,
+                        COUNT(CASE WHEN stock_actual = 0 THEN 1 END) as productos_sin_stock,
+                        COUNT(CASE WHEN stock_actual <= stock_minimo THEN 1 END) as productos_stock_bajo
+                    FROM productos
+                )
                 SELECT 
-                    COALESCE(SUM(v.cantidad * v.precio_venta), 0) as total_ventas,
-                    COALESCE(COUNT(DISTINCT v.producto_id), 0) as productos_vendidos,
-                    COALESCE(SUM(v.cantidad), 0) as unidades_vendidas,
-                    COALESCE(AVG(v.precio_venta), 0) as ticket_promedio,
-                    COALESCE(AVG((v.precio_venta - p.precio_compra) / NULLIF(v.precio_venta, 0) * 100), 0) as margen_promedio,
-                    COALESCE(SUM(v.cantidad * (v.precio_venta - p.precio_compra)), 0) as beneficio_total
-                FROM productos p
-                LEFT JOIN ventas v ON v.producto_id = p.id 
-                    AND v.fecha_venta BETWEEN :fecha_inicio AND :fecha_fin
-            ),
-            productos_metrics AS (
-                SELECT 
-                    COUNT(id) as productos_total,
-                    SUM(stock_actual) as stock_total,
-                    SUM(stock_actual * precio_compra) as valor_inventario,
-                    COUNT(CASE WHEN stock_actual = 0 THEN 1 END) as productos_sin_stock,
-                    COUNT(CASE WHEN stock_actual <= stock_minimo THEN 1 END) as productos_stock_bajo,
-                    COUNT(CASE WHEN stock_actual > 0 THEN 1 END) as productos_activos,
-                    COUNT(CASE WHEN stock_actual > stock_minimo * 2 THEN 1 END) as productos_alta_rotacion
-                FROM productos
-            )
-            SELECT 
-                bm.*,
-                pm.*,
-                COALESCE(
-                    (SELECT SUM(v2.cantidad * v2.precio_venta)
-                    FROM ventas v2
-                    WHERE v2.fecha_venta BETWEEN 
-                        :fecha_inicio - make_interval(days => :dias_periodo) 
-                        AND :fecha_inicio), 0
-                ) as ventas_periodo_anterior
-            FROM base_metrics bm
-            CROSS JOIN productos_metrics pm
-        """), self.engine, params={'fecha_inicio': fecha_inicio, 'fecha_fin': fecha_fin, 'dias_periodo': dias_periodo})
+                    bm.*,
+                    pm.*,
+                    COALESCE(
+                        (SELECT SUM(v2.cantidad * v2.precio_venta)
+                        FROM ventas v2
+                        WHERE v2.fecha_venta BETWEEN 
+                            :fecha_inicio - make_interval(days => :dias_periodo) 
+                            AND :fecha_inicio), 0
+                    ) as ventas_periodo_anterior
+                FROM base_metrics bm
+                CROSS JOIN productos_metrics pm
+            """), self.engine, params={'fecha_inicio': fecha_inicio, 'fecha_fin': fecha_fin, 'dias_periodo': dias_periodo})
 
-            # Datos de ventas diarias para gráficos
+            # Resto del código para ventas_diarias, low_stock y recent_sales se mantiene igual
             ventas_diarias = pd.read_sql(text("""
                 WITH fecha_serie AS (
                     SELECT generate_series(
-                        :fecha_inicio::timestamp, 
-                        :fecha_fin::timestamp, 
+                        CAST(:fecha_inicio AS timestamp), 
+                        CAST(:fecha_fin AS timestamp), 
                         '1 day'::interval
                     )::date as fecha
                 )
@@ -392,15 +388,6 @@ class DatabaseManager:
                 ORDER BY fs.fecha
             """), self.engine, params={'fecha_inicio': fecha_inicio, 'fecha_fin': fecha_fin})
 
-            if not ventas_diarias.empty:
-                # Calcular media móvil de 7 días
-                ventas_diarias['media_movil'] = ventas_diarias['venta_total'].rolling(window=7, min_periods=1).mean()
-                # Añadir a las métricas
-                metrics['fecha_ventas'] = ventas_diarias['fecha'].tolist()
-                metrics['ventas_diarias'] = ventas_diarias['venta_total'].tolist()
-                metrics['media_movil'] = ventas_diarias['media_movil'].tolist()
-
-            # Query para productos con stock bajo
             low_stock = pd.read_sql(text("""
                 SELECT 
                     id, sku, nombre, stock_actual, stock_minimo,
@@ -410,7 +397,6 @@ class DatabaseManager:
                 ORDER BY (stock_actual::float / NULLIF(stock_minimo, 0)) ASC
             """), self.engine)
 
-            # Query para ventas recientes
             recent_sales = pd.read_sql(text("""
                 SELECT 
                     p.nombre, 
@@ -432,7 +418,7 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error en load_dashboard_data: {e}")
             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-        
+    
     def get_inventory_report(self):
         """Obtiene reporte de inventario actual"""
         try:

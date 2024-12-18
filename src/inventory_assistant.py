@@ -1,10 +1,10 @@
 import pandas as pd
 import logging
 from typing import Dict, List, Optional
-from langchain.llms import Ollama
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from langchain.memory import ConversationBufferMemory
+from langchain_ollama import OllamaLLM
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +12,7 @@ class InventoryAssistant:
     def __init__(self, db_manager):
         """Inicializa el asistente de inventario"""
         try:
-            self.llm = Ollama(model="llama3.2")
+            self.llm = OllamaLLM(model="llama3.2")
             self.db = db_manager
             self.memory = ConversationBufferMemory(
                 memory_key="chat_history",
