@@ -1,5 +1,6 @@
 import pandas as pd
 from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta
 import numpy as np
 import logging
@@ -9,24 +10,33 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class DatabaseManager:
-    def __init__(self):
+    def __init__(self, database_url):
         """Inicializa la conexión a la base de datos"""
-        self.DATABASE_URL = "postgresql://localhost:5432/amazon_analytics"
         try:
-            self.engine = create_engine(self.DATABASE_URL)
+            if not self.validate_database_url(database_url):
+                raise ValueError("URL de base de datos inválida")
+                
+            self.engine = create_engine(database_url)
+            self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
             logger.info("Conexión a base de datos establecida")
         except Exception as e:
             logger.error(f"Error al conectar a la base de datos: {e}")
             raise
+
+    def get_session(self):
+        """Obtiene una nueva sesión de base de datos"""
+        return self.SessionLocal()
 
     def test_connection(self):
         """Prueba la conexión a la base de datos"""
         try:
             with self.engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
+            logger.info("Test de conexión exitoso")
             return True
         except Exception as e:
-            logger.error(f"Error en test_connection: {e}")
+            logger.error(f"Error en test_connection: {str(e)}")
+            logger.error(f"Detalles de conexión: {self.engine.url}")
             return False
 
     def add_product(self, sku, nombre, precio_compra, precio_venta, stock_actual, stock_minimo, categoria):
@@ -51,40 +61,8 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error en add_product: {e}")
             raise Exception(f"Error al añadir producto: {str(e)}")
-
+    
     def update_product(self, product_id, sku, nombre, precio_compra, precio_venta, stock_actual, stock_minimo, categoria):
-        """Actualiza un producto existente"""
-        try:
-            query = text("""
-                UPDATE productos 
-                SET sku = :sku,
-                    nombre = :nombre,
-                    precio_compra = :precio_compra,
-                    precio_venta = :precio_venta,
-                    stock_actual = :stock_actual,
-                    stock_minimo = :stock_minimo,
-                    categoria = :categoria
-                WHERE id = :product_id
-            """)
-            
-            with self.engine.begin() as conn:
-                result = conn.execute(query, {
-                    'product_id': product_id,
-                    'sku': sku,
-                    'nombre': nombre,
-                    'precio_compra': precio_compra,
-                    'precio_venta': precio_venta,
-                    'stock_actual': stock_actual,
-                    'stock_minimo': stock_minimo,
-                    'categoria': categoria
-                })
-                if result.rowcount == 0:
-                    raise ValueError("Producto no encontrado")
-                return True
-        except Exception as e:
-            logger.error(f"Error en update_product: {e}")
-            raise Exception(f"Error al actualizar producto: {str(e)}")
-        
         """Actualiza un producto existente"""
         try:
             query = text("""
@@ -119,64 +97,6 @@ class DatabaseManager:
             raise Exception(f"Error al actualizar producto: {str(e)}")
 
     def register_sale(self, producto_id, cantidad, precio_venta):
-        """Registra una venta y actualiza el stock"""
-        try:
-            with self.engine.begin() as conn:
-                # Verificar stock disponible
-                query_stock = text("""
-                    SELECT stock_actual 
-                    FROM productos 
-                    WHERE id = :producto_id
-                    FOR UPDATE
-                """)
-                result = conn.execute(query_stock, {"producto_id": producto_id})
-                stock_actual = result.scalar()
-                
-                if stock_actual is None:
-                    raise ValueError("Producto no encontrado")
-                    
-                if stock_actual < cantidad:
-                    raise ValueError(f"Stock insuficiente. Stock actual: {stock_actual}")
-                
-                # Registrar venta
-                query_venta = text("""
-                    INSERT INTO ventas (producto_id, cantidad, precio_venta, fecha_venta)
-                    VALUES (:producto_id, :cantidad, :precio_venta, CURRENT_TIMESTAMP)
-                    RETURNING id
-                """)
-                result = conn.execute(
-                    query_venta,
-                    {
-                        'producto_id': producto_id,
-                        'cantidad': cantidad,
-                        'precio_venta': precio_venta
-                    }
-                )
-                venta_id = result.scalar()
-                
-                # Actualizar stock (quitamos fecha_actualizacion)
-                query_update = text("""
-                    UPDATE productos 
-                    SET stock_actual = stock_actual - :cantidad
-                    WHERE id = :producto_id
-                """)
-                conn.execute(
-                    query_update,
-                    {
-                        'producto_id': producto_id,
-                        'cantidad': cantidad
-                    }
-                )
-                
-                return venta_id
-                    
-        except ValueError as e:
-            logger.warning(f"Error de validación en register_sale: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Error en register_sale: {e}")
-            raise Exception(f"Error al registrar la venta: {str(e)}")
-    
         """Registra una venta y actualiza el stock"""
         try:
             with self.engine.begin() as conn:
@@ -333,7 +253,7 @@ class DatabaseManager:
             
             dias_periodo = (fecha_fin - fecha_inicio).days
 
-            # Query para métricas principales corregida
+            # Query para métricas principales
             metrics = pd.read_sql(text("""
                 WITH base_metrics AS (
                     SELECT 
@@ -349,7 +269,7 @@ class DatabaseManager:
                 ),
                 productos_metrics AS (
                     SELECT 
-                        COUNT(id) as total_productos,  -- Cambiado de productos_total a total_productos
+                        COUNT(id) as total_productos,
                         SUM(stock_actual) as stock_total,
                         SUM(stock_actual * precio_compra) as valor_inventario,
                         COUNT(CASE WHEN stock_actual = 0 THEN 1 END) as productos_sin_stock,
@@ -369,24 +289,6 @@ class DatabaseManager:
                 FROM base_metrics bm
                 CROSS JOIN productos_metrics pm
             """), self.engine, params={'fecha_inicio': fecha_inicio, 'fecha_fin': fecha_fin, 'dias_periodo': dias_periodo})
-
-            # Resto del código para ventas_diarias, low_stock y recent_sales se mantiene igual
-            ventas_diarias = pd.read_sql(text("""
-                WITH fecha_serie AS (
-                    SELECT generate_series(
-                        CAST(:fecha_inicio AS timestamp), 
-                        CAST(:fecha_fin AS timestamp), 
-                        '1 day'::interval
-                    )::date as fecha
-                )
-                SELECT 
-                    fs.fecha,
-                    COALESCE(SUM(v.cantidad * v.precio_venta), 0) as venta_total
-                FROM fecha_serie fs
-                LEFT JOIN ventas v ON DATE(v.fecha_venta) = fs.fecha
-                GROUP BY fs.fecha
-                ORDER BY fs.fecha
-            """), self.engine, params={'fecha_inicio': fecha_inicio, 'fecha_fin': fecha_fin})
 
             low_stock = pd.read_sql(text("""
                 SELECT 
@@ -465,56 +367,6 @@ class DatabaseManager:
                 return pd.read_sql(query, conn, params={'start_date': start_date, 'end_date': end_date})
         except Exception as e:
             logger.error(f"Error en get_sales_report: {e}")
-            return pd.DataFrame()
-        """Obtiene reporte de rendimiento por periodo"""
-        try:
-            # Adaptamos el intervalo según el período seleccionado
-            interval_map = {
-                'day': "1 day",
-                'week': "1 week",
-                'month': "1 month"
-            }
-            
-            query = text("""
-                WITH ventas_periodo AS (
-                    SELECT 
-                        DATE_TRUNC(:periodo, v.fecha_venta) as periodo,
-                        p.categoria,
-                        COUNT(DISTINCT v.producto_id) as productos_vendidos,
-                        SUM(v.cantidad) as unidades_vendidas,
-                        CAST(SUM(v.cantidad * v.precio_venta) AS DECIMAL(10,2)) as ingresos_totales,
-                        CAST(SUM(v.cantidad * (v.precio_venta - p.precio_compra)) AS DECIMAL(10,2)) as beneficio_total,
-                        CAST(
-                            (SUM(v.cantidad * (v.precio_venta - p.precio_compra)) / 
-                            NULLIF(SUM(v.cantidad * v.precio_venta), 0) * 100) 
-                        AS DECIMAL(10,2)) as margen_porcentaje
-                    FROM ventas v
-                    JOIN productos p ON v.producto_id = p.id
-                    WHERE v.fecha_venta >= CURRENT_DATE - INTERVAL '12 months'
-                    GROUP BY DATE_TRUNC(:periodo, v.fecha_venta), p.categoria
-                )
-                SELECT 
-                    periodo,
-                    categoria,
-                    productos_vendidos,
-                    unidades_vendidas,
-                    ingresos_totales,
-                    beneficio_total,
-                    margen_porcentaje
-                FROM ventas_periodo
-                ORDER BY periodo DESC, categoria
-            """)
-            
-            with self.engine.connect() as conn:
-                df = pd.read_sql(query, conn, params={'periodo': periodo})
-                
-                # Convertimos la columna periodo a datetime si no lo está
-                df['periodo'] = pd.to_datetime(df['periodo'])
-                
-                return df
-                
-        except Exception as e:
-            logger.error(f"Error en get_performance_report: {e}")
             return pd.DataFrame()
 
     def get_performance_report(self, periodo='month'):
@@ -678,3 +530,103 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error en get_latest_predictions: {e}")
             return None
+    def validate_database_url(self, url):
+        """
+        Valida el formato y componentes de la URL de conexión a la base de datos.
+        
+        Args:
+            url (str): URL de conexión a validar
+            
+        Returns:
+            bool: True si la URL es válida, False en caso contrario
+            
+        Raises:
+            ValueError: Si la URL tiene un formato inválido
+        """
+        try:
+            logger.info("Validando URL de conexión...")
+            
+            # Verificación básica de formato
+            if not isinstance(url, str) or not url:
+                raise ValueError("URL vacía o tipo inválido")
+                
+            # Verificar el prefijo correcto
+            if not url.startswith('postgresql://'):
+                raise ValueError("URL debe comenzar con 'postgresql://'")
+                
+            # Dividir la URL en sus componentes
+            try:
+                auth, rest = url.replace('postgresql://', '').split('@')
+                credentials = auth.split(':')
+                location = rest.split('/')
+                
+                # Validar número de componentes
+                if len(credentials) != 2:
+                    raise ValueError("Credenciales malformadas")
+                    
+                if len(location) != 2:
+                    raise ValueError("Ubicación de base de datos malformada")
+                    
+                # Validar usuario y contraseña
+                username, password = credentials
+                if not username:
+                    raise ValueError("Usuario no especificado")
+                    
+                # Validar host y puerto
+                host_port = location[0].split(':')
+                if len(host_port) != 2:
+                    raise ValueError("Host/puerto malformado")
+                    
+                host, port = host_port
+                if not host:
+                    raise ValueError("Host no especificado")
+                    
+                # Validar puerto
+                try:
+                    port = int(port)
+                    if port < 1 or port > 65535:
+                        raise ValueError("Puerto fuera de rango (1-65535)")
+                except ValueError:
+                    raise ValueError("Puerto inválido")
+                    
+                # Validar nombre de base de datos
+                database = location[1]
+                if not database:
+                    raise ValueError("Nombre de base de datos no especificado")
+                
+                logger.info("URL de conexión validada exitosamente")
+                return True
+                
+            except Exception as e:
+                raise ValueError(f"Error al parsear URL: {str(e)}")
+                
+        except Exception as e:
+            logger.error(f"Error en validación de URL: {str(e)}")
+            return False
+
+    def __init__(self, database_url):
+        """Inicializa la conexión a la base de datos"""
+        try:
+            # Validar URL antes de intentar la conexión
+            if not self.validate_database_url(database_url):
+                raise ValueError("URL de base de datos inválida")
+            
+            # Crear el engine solo si la validación fue exitosa
+            self.engine = create_engine(database_url)
+            self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+            logger.info("Conexión a base de datos establecida")
+        except Exception as e:
+            logger.error(f"Error al conectar a la base de datos: {e}")
+            raise
+
+    def test_connection(self):
+        """Prueba la conexión a la base de datos"""
+        try:
+            with self.engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            logger.info("Test de conexión exitoso")
+            return True
+        except Exception as e:
+            logger.error(f"Error en test_connection: {str(e)}")
+            logger.error(f"Detalles de conexión: {self.engine.url}")
+            return False
