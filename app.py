@@ -14,6 +14,8 @@ from src.inventory_assistant import InventoryAssistant
 from src.pagina_asistente import pagina_asistente
 import logging
 import time
+import os
+from dotenv import load_dotenv
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -30,18 +32,45 @@ st.set_page_config(
 # Inicialización con manejo de errores
 @st.cache_resource
 def init_components():
-    try:
-        db = DatabaseManager()
-        # Verificar conexión
-        with db.engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        predictor = SalesPredictor()
-        visualizer = DashboardVisualizer()
-        assistant = InventoryAssistant(db)
-        return db, predictor, visualizer, assistant
-    except Exception as e:
-        logger.error(f"Error al inicializar componentes: {e}")
-        return None, None, None, None  # Asegurarse de retornar 4 valores
+    max_retries = 3
+    retry_delay = 2
+    
+    for attempt in range(max_retries):
+        try:
+            # Usar solo variables de entorno
+            load_dotenv()  # Asegurarse de cargar las variables de entorno
+            
+            db_config = {
+                'user': os.getenv('DB_USER'),
+                'password': os.getenv('DB_PASSWORD'),
+                'host': os.getenv('DB_HOST'),
+                'port': os.getenv('DB_PORT'),
+                'database': os.getenv('DB_NAME'),
+                
+            }
+
+            # Agregar logging para depuración
+            logger.info("Attempting database connection with config:", db_config)
+
+            # Crear la URL de conexión
+            # En la función init_components()
+            database_url = f"postgresql://{db_config['user']}:{db_config['password']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
+            
+            db = DatabaseManager(database_url)
+            if not db.test_connection():
+                raise Exception("Failed database connection test")
+                
+            predictor = SalesPredictor()
+            visualizer = DashboardVisualizer()
+            assistant = InventoryAssistant(db)
+            return db, predictor, visualizer, assistant
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+                continue
+            logger.error(f"Final attempt failed: {e}")
+            return None, None, None, None
 
 db, predictor, visualizer, assistant = init_components()
 
