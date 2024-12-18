@@ -41,7 +41,15 @@ def pagina_asistente(db, assistant):
                     
                     # Mostrar análisis detallado
                     st.markdown("### Análisis Detallado")
-                    st.write(insights['analysis'])
+                    
+                    # Dividir el análisis en secciones
+                    analysis_text = insights['analysis']
+                    sections = analysis_text.split('\n\n')
+                    
+                    for section in sections:
+                        if section.strip():
+                            st.markdown(section)
+                            st.markdown("---")
                     
                     # Timestamp del análisis
                     st.caption(f"Análisis generado el {insights['timestamp']}")
@@ -106,8 +114,21 @@ def pagina_asistente(db, assistant):
                             recommendations['data_summary']['productos_alta_rotacion']
                         )
                     
-                    # Mostrar recomendaciones
-                    st.markdown("### Recomendaciones")
-                    st.write(recommendations['recommendations'])
+                    # Mostrar recomendaciones estructuradas
+                    st.markdown("### Recomendaciones Detalladas")
                     
+                    # Dividir y mostrar las recomendaciones por sección
+                    recommendations_text = recommendations['recommendations']
+                    sections = recommendations_text.split('\n\n')
+                    
+                    for section in sections:
+                        if section.strip():
+                            # Usar expander para cada sección
+                            header = section.split('\n')[0].strip()
+                            content = '\n'.join(section.split('\n')[1:])
+                            
+                            with st.expander(header, expanded=True):
+                                st.markdown(content)
+                    
+                    # Mostrar timestamp
                     st.caption(f"Recomendaciones generadas el {recommendations['timestamp']}")

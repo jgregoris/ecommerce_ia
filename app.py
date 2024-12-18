@@ -41,12 +41,11 @@ def init_components():
         return db, predictor, visualizer, assistant
     except Exception as e:
         logger.error(f"Error al inicializar componentes: {e}")
-        st.error(f"Error al inicializar la aplicación: {str(e)}")
-        return None, None, None
+        return None, None, None, None  # Asegurarse de retornar 4 valores
 
 db, predictor, visualizer, assistant = init_components()
 
-if db is None or predictor is None or visualizer is None:
+if db is None or predictor is None or visualizer is None or assistant is None:
     st.error("No se pudieron inicializar los componentes necesarios.")
     st.stop()
 

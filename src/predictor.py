@@ -11,7 +11,7 @@ class SalesPredictor:
     def __init__(self):
         """Inicializa el predictor de ventas usando Llama 3.2"""
         try:
-            self.llm = Ollama(model="llama2")
+            self.llm = Ollama(model="llama3.2")
             logger.info("SalesPredictor inicializado con Llama 3.2")
         except Exception as e:
             logger.error(f"Error al inicializar SalesPredictor: {e}")
