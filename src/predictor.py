@@ -1,9 +1,9 @@
 import pandas as pd
-from langchain.llms import Ollama
 from typing import Dict, Optional
 import numpy as np
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
+from langchain_ollama import OllamaLLM
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +11,7 @@ class SalesPredictor:
     def __init__(self):
         """Inicializa el predictor de ventas usando Llama 3.2"""
         try:
-            self.llm = Ollama(model="llama3.2")
+            self.llm = OllamaLLM(model="llama3.2")
             logger.info("SalesPredictor inicializado con Llama 3.2")
         except Exception as e:
             logger.error(f"Error al inicializar SalesPredictor: {e}")
