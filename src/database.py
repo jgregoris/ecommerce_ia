@@ -331,45 +331,48 @@ class DatabaseManager:
                 fecha_inicio = datetime.now().date() - timedelta(days=30)
             if fecha_fin is None:
                 fecha_fin = datetime.now().date()
-                
+            
+            # Calcular días del periodo
+            dias_periodo = (fecha_fin - fecha_inicio).days
+
             # Query para métricas principales con valores por defecto cuando no hay ventas
             metrics = pd.read_sql(text("""
-                WITH base_metrics AS (
-                    SELECT 
-                        COALESCE(SUM(v.cantidad * v.precio_venta), 0) as total_ventas,
-                        COALESCE(COUNT(DISTINCT v.producto_id), 0) as productos_vendidos,
-                        COALESCE(SUM(v.cantidad), 0) as unidades_vendidas,
-                        COALESCE(AVG(v.precio_venta), 0) as ticket_promedio,
-                        COALESCE(AVG((v.precio_venta - p.precio_compra) / NULLIF(v.precio_venta, 0) * 100), 0) as margen_promedio,
-                        COALESCE(SUM(v.cantidad * (v.precio_venta - p.precio_compra)), 0) as beneficio_total
-                    FROM productos p
-                    LEFT JOIN ventas v ON v.producto_id = p.id 
-                        AND v.fecha_venta BETWEEN :fecha_inicio AND :fecha_fin
-                ),
-                productos_metrics AS (
-                    SELECT 
-                        COUNT(id) as productos_total,
-                        SUM(stock_actual) as stock_total,
-                        SUM(stock_actual * precio_compra) as valor_inventario,
-                        COUNT(CASE WHEN stock_actual = 0 THEN 1 END) as productos_sin_stock,
-                        COUNT(CASE WHEN stock_actual <= stock_minimo THEN 1 END) as productos_stock_bajo,
-                        COUNT(CASE WHEN stock_actual > 0 THEN 1 END) as productos_activos,
-                        COUNT(CASE WHEN stock_actual > stock_minimo * 2 THEN 1 END) as productos_alta_rotacion
-                    FROM productos
-                )
+            WITH base_metrics AS (
                 SELECT 
-                    bm.*,
-                    pm.*,
-                    COALESCE(
-                        (SELECT SUM(v2.cantidad * v2.precio_venta)
-                        FROM ventas v2
-                        WHERE v2.fecha_venta BETWEEN 
-                            :fecha_inicio - (:fecha_fin - :fecha_inicio)::interval 
-                            AND :fecha_inicio), 0
-                    ) as ventas_periodo_anterior
-                FROM base_metrics bm
-                CROSS JOIN productos_metrics pm
-            """), self.engine, params={'fecha_inicio': fecha_inicio, 'fecha_fin': fecha_fin})
+                    COALESCE(SUM(v.cantidad * v.precio_venta), 0) as total_ventas,
+                    COALESCE(COUNT(DISTINCT v.producto_id), 0) as productos_vendidos,
+                    COALESCE(SUM(v.cantidad), 0) as unidades_vendidas,
+                    COALESCE(AVG(v.precio_venta), 0) as ticket_promedio,
+                    COALESCE(AVG((v.precio_venta - p.precio_compra) / NULLIF(v.precio_venta, 0) * 100), 0) as margen_promedio,
+                    COALESCE(SUM(v.cantidad * (v.precio_venta - p.precio_compra)), 0) as beneficio_total
+                FROM productos p
+                LEFT JOIN ventas v ON v.producto_id = p.id 
+                    AND v.fecha_venta BETWEEN :fecha_inicio AND :fecha_fin
+            ),
+            productos_metrics AS (
+                SELECT 
+                    COUNT(id) as productos_total,
+                    SUM(stock_actual) as stock_total,
+                    SUM(stock_actual * precio_compra) as valor_inventario,
+                    COUNT(CASE WHEN stock_actual = 0 THEN 1 END) as productos_sin_stock,
+                    COUNT(CASE WHEN stock_actual <= stock_minimo THEN 1 END) as productos_stock_bajo,
+                    COUNT(CASE WHEN stock_actual > 0 THEN 1 END) as productos_activos,
+                    COUNT(CASE WHEN stock_actual > stock_minimo * 2 THEN 1 END) as productos_alta_rotacion
+                FROM productos
+            )
+            SELECT 
+                bm.*,
+                pm.*,
+                COALESCE(
+                    (SELECT SUM(v2.cantidad * v2.precio_venta)
+                    FROM ventas v2
+                    WHERE v2.fecha_venta BETWEEN 
+                        :fecha_inicio - make_interval(days => :dias_periodo) 
+                        AND :fecha_inicio), 0
+                ) as ventas_periodo_anterior
+            FROM base_metrics bm
+            CROSS JOIN productos_metrics pm
+        """), self.engine, params={'fecha_inicio': fecha_inicio, 'fecha_fin': fecha_fin, 'dias_periodo': dias_periodo})
 
             # Datos de ventas diarias para gráficos
             ventas_diarias = pd.read_sql(text("""
@@ -477,8 +480,6 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error en get_sales_report: {e}")
             return pd.DataFrame()
-
-    def get_performance_report(self, periodo='month'):
         """Obtiene reporte de rendimiento por periodo"""
         try:
             # Adaptamos el intervalo según el período seleccionado
@@ -529,7 +530,43 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error en get_performance_report: {e}")
             return pd.DataFrame()
-        
+
+    def get_performance_report(self, periodo='month'):
+        """Obtiene reporte de rendimiento por periodo"""
+        try:
+            query = text("""
+                WITH ventas_periodo AS (
+                    SELECT 
+                        DATE_TRUNC(:periodo, v.fecha_venta) as periodo,
+                        CAST(SUM(v.cantidad * v.precio_venta) AS DECIMAL(10,2)) as ingresos_totales,
+                        CAST(SUM(v.cantidad * (v.precio_venta - p.precio_compra)) AS DECIMAL(10,2)) as beneficio_total,
+                        COUNT(DISTINCT v.producto_id) as productos_vendidos,
+                        CAST(
+                            CASE 
+                                WHEN SUM(v.cantidad * v.precio_venta) > 0 
+                                THEN (SUM(v.cantidad * (v.precio_venta - p.precio_compra)) / 
+                                    SUM(v.cantidad * v.precio_venta) * 100)
+                                ELSE 0 
+                            END AS DECIMAL(10,2)
+                        ) as margen_porcentaje
+                    FROM ventas v
+                    JOIN productos p ON v.producto_id = p.id
+                    WHERE v.fecha_venta >= CURRENT_DATE - INTERVAL '12 months'
+                    GROUP BY DATE_TRUNC(:periodo, v.fecha_venta)
+                )
+                SELECT *
+                FROM ventas_periodo
+                ORDER BY periodo DESC
+            """)
+            
+            with self.engine.connect() as conn:
+                df = pd.read_sql(query, conn, params={'periodo': periodo})
+                return df
+                
+        except Exception as e:
+            logger.error(f"Error en get_performance_report: {e}")
+            return pd.DataFrame()
+            
     def save_prediction(self, producto_id, prediccion):
         """Guarda una predicción en la base de datos"""
         try:
