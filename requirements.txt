@@ -1,7 +1,7 @@
 python-dotenv==1.0.0
 langchain==0.3.12
 langchain_ollama==0.2.1
-numpy>=1.22.4,<2.0.0  # Corregido para compatibilidad
+numpy>=1.22.4,<2.0.0
 pandas==2.2.3
 plotly==5.24.1
 scikit_learn==1.6.0
