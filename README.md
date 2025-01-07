@@ -1,4 +1,4 @@
-# Proyecto de Inteligencia Artificial
+# Proyecto de Inteligencia Artificial: Sistema inteligente de gestión de inventario para ecommerce.
 
 ## Descripción General
 Este proyecto surge como parte del bootcamp de Inteligencia Artificial de Factoria F5 que estoy impartiendo como alumno, con el objetivo de aplicar los conocimientos adquiridos en el desarrollo de una aplicación práctica. 
